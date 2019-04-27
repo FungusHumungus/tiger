@@ -1,11 +1,15 @@
 {-# LANGUAGE OverloadedStrings #-}
 
+module Lexer where
+
 import Text.Megaparsec
 import Text.Megaparsec.Char
+import Text.Megaparsec.Error (errorBundlePretty)
 import qualified Text.Megaparsec.Char.Lexer as L
 import Control.Monad.Combinators.Expr
 -- import Control.Applicative.Combinators
 import Data.Text (Text)
+import Data.Bifunctor (bimap)
 import qualified Data.Text as T
 import Data.Void (Void)
 
@@ -89,8 +93,10 @@ data Declaration
 data Expr
   = Function Identifier [ TyField ] ( Maybe TypeName ) Expr
   | Nil
+  | StringLiteral T.Text
+  | IntLiteral Int
   | Sequence [ Expr ]
-  | FunctionCall Identifier [ Identifier ]
+  | FunctionCall Identifier [ Expr ]
   | Arithmetic AExpr
   | Comparison Expr CompOp Expr
   | Let [ Declaration ] Expr
@@ -98,6 +104,7 @@ data Expr
   | Assignment LValue Expr
   | While Expr Expr
   | For Identifier Expr Expr Expr
+  | LValueE LValue
   deriving Show
 
 
@@ -169,7 +176,7 @@ variableParser :: Parser Variable
 variableParser = do
   _ <- lexeme $ string "var"
   id <- lexeme identifier
-  type' <- optional $ ( lexeme $ string ":" ) *> (lexeme typeId)
+  type' <- optional $ try $ ( lexeme $ string ":" ) *> (lexeme typeId)
   _ <- lexeme $ string ":="
   expr <- exprParser
   return $ Variable id type' expr
@@ -197,19 +204,20 @@ functionParser = do
 
 data LValue
   = Value Identifier
-  | RecordLookup LValue Identifier
-  | ArrElem LValue Expr
+  | RecordLookup Identifier LValue 
+  | ArrElem Identifier Expr
   deriving Show
 
-
+-- | Not quite there
+-- Cant do a.x.e[3].s
 lvalueParser :: Parser LValue
-lvalueParser = choice [ arrElem
-                      , recordLookup
-                      , value
-                      ] 
+lvalueParser =  choice [ try arrElem
+                       , try recordLookup
+                       , value
+                       ]
   where
     arrElem = do
-      lvalue <- lvalueParser
+      lvalue <- lexeme identifier
       _ <- lexeme $ char '['
       expr <- exprParser
       _ <- lexeme $ char ']'
@@ -217,13 +225,14 @@ lvalueParser = choice [ arrElem
       return $ ArrElem lvalue expr
 
     recordLookup = do
-      lvalue <- lvalueParser
-      _ <- char '.'
-      id <- lexeme identifier
+      lvalue <- lexeme identifier
+      char '.'
+      id <- lvalueParser
       return $ RecordLookup lvalue id
 
     value = do
-      Value <$> lexeme identifier
+      id <- lexeme identifier
+      return $ Value id
       
 
 -- | Nil
@@ -250,7 +259,7 @@ data ArithOp
   deriving Show
 
 data AExpr
-  = Var Identifier
+  = Var LValue
   | IntConst Int
   | Neg AExpr
   | ABinary ArithOp AExpr AExpr
@@ -267,7 +276,7 @@ arithmeticOperators =
 
 arithmeticTerm :: Parser AExpr
 arithmeticTerm = parens aExpr
-                 <|> Var      <$> identifier
+                 <|> Var      <$> lvalueParser
                  <|> IntConst <$> integerLiteral
 
 
@@ -310,7 +319,7 @@ comparisonParser =
 functionCallParser :: Parser Expr
 functionCallParser = do
   id <- lexeme identifier
-  params <- parens $ sepBy (lexeme identifier) (char ',')
+  params <- parens $ sepBy exprParser (char ',')
 
   return $ FunctionCall id params
 
@@ -323,6 +332,7 @@ letParser = do
   decs <- many $ (DVariable <$> variableParser) <|> (DTyDec <$> tydecParser)
   rword "in"
   expr <- exprParser
+  rword "end"
 
   return $ Let decs expr
 
@@ -378,19 +388,30 @@ forParser = do
 
   return $ For id from to expr
 
+-- | Literals
+
+literalParser :: Parser Expr
+literalParser = 
+  ( StringLiteral <$> stringLiteral ) <|> ( IntLiteral <$> integerLiteral )
 
 exprParser :: Parser Expr
-exprParser = choice [ functionParser
-                    , nilParser
-                    , sequenceParser
-                    , functionCallParser
-                    , arithmeticParser
-                    , comparisonParser
-                    , letParser
-                    , ifParser
-                    , assignmentParser
-                    , whileParser
-                    , forParser
+exprParser = choice [ try functionParser <?> "function"
+                    , try nilParser <?> "nil"
+                    , try sequenceParser <?> "sequence"
+                    , try functionCallParser <?> "function call"
+                    , try arithmeticParser <?> "arithmetic"
+                    -- , try comparisonParser
+                    , try letParser <?> "let"
+                    , try ifParser <?> "if"
+                    , try assignmentParser <?> "assignment"
+                    , try whileParser <?> "while"
+                    , try forParser <?> "for"
+                    , try literalParser <?> "literal"
                     ]
 
+programParser :: Parser Expr
+programParser = between spaceconsumer eof exprParser
   
+parseText :: Text -> String -> Either T.Text Expr
+parseText contents filename =
+  bimap (T.pack . errorBundlePretty) id $ parse programParser filename contents

@@ -6,6 +6,10 @@ module Lib
 
 import qualified Data.Map as Map
 import Control.Monad (void)
+import qualified Data.Text as T
+import qualified Data.Text.IO as TIO
+import qualified Lexer as L
+import System.Environment (getArgs)
 
 type Id = String
 
@@ -93,4 +97,19 @@ interp stm =
   void $ interpStm Map.empty stm 
                                              
 run :: IO ()
-run = putStrLn "ponk"
+run = do
+  args <- getArgs
+  let file = case args of
+               [] -> "test.tig"
+               (x:_) -> x
+
+  contents <- TIO.readFile file
+
+  putStrLn $ T.unpack contents
+
+  case L.parseText contents file of
+    Left err -> putStrLn $ T.unpack err
+    Right expr -> putStrLn $ show expr
+  
+  
+

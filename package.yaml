@@ -50,3 +50,5 @@ tests:
     - -with-rtsopts=-N
     dependencies:
     - tiger
+    - tasty
+    - tasty-hunit
