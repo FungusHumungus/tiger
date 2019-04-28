@@ -153,8 +153,6 @@ lexeme = L.lexeme spaceconsumer
 symbol :: Text -> Parser Text
 symbol = L.symbol spaceconsumer
 
-
-
 underscore :: Parser Char
 underscore = single '_'
 
@@ -207,19 +205,23 @@ identifier =
                            else return $ Identifier x
 
 
-
+-- | Parse the expression, whatever kind of expression it is.
 parseExp :: Parser Exp
-parseExp = choice [ try parseNilExp
-                  , try parseIntExp
-                  , try parseStringExp
-                  , try parseRecordExp
-                  , try parseArrayExp
-                  , try parseCallExp
-                  , try parseSeqExp
-                  , try parseAssignExp
-                  , try $ VarExp <$> parseVar
-                  , try parseOpExp
-                  ]
+parseExp =  ( try parseNilExp ) <|>
+            ( try parseIntExp ) <|>
+            ( try parseStringExp ) <|>
+            ( try parseRecordExp ) <|>
+            ( try parseArrayExp ) <|>
+            ( try parseCallExp ) <|>
+            ( try parseSeqExp ) <|>
+            ( try parseAssignExp ) <|>
+            ( try parseOpExp ) <|>
+            ( try parseIfExp ) <|>
+            ( try parseWhileExp ) <|>
+            ( try parseForExp ) <|>
+            ( try parseBreakExp ) <|>
+            ( try parseLetExp ) <|>
+            ( try parseVar )
 
 
 tyFieldParser :: Parser Field
@@ -229,7 +231,10 @@ tyFieldParser = undefined
 -- | A declaration.
 -- | Can be a function, a variable or a type
 parseDec :: Parser Dec
-parseDec = ( FunctionDec <$> some parseFunctionDec ) <|> parseVarDec <|> parseTypeDec
+parseDec = ( FunctionDec <$> some parseFunctionDec ) <|>
+           ( parseVarDec ) <|>
+           ( parseTypeDec )
+
   where
     parseType = do
       symbol ":"
@@ -255,7 +260,7 @@ parseDec = ( FunctionDec <$> some parseFunctionDec ) <|> parseVarDec <|> parseTy
       pos <- getSourcePos
       rword "var"
       name <- identifier
-      typ <- optional parseType
+      typ <- optional $ try parseType
       symbol ":="
       init <- parseExp
 
@@ -303,8 +308,8 @@ parseDec = ( FunctionDec <$> some parseFunctionDec ) <|> parseVarDec <|> parseTy
       
 -- | A variable
 -- x.y[3].z[2][9]
-parseVar :: Parser Var
-parseVar = do
+variableParser :: Parser Var
+variableParser = do
   pos <- getSourcePos
   var <- parseSimpleVar pos
   go var
@@ -333,10 +338,12 @@ parseVar = do
     parseSimpleVar :: SourcePos -> Parser Var
     parseSimpleVar pos = do
       name <- identifier
-      notFollowedBy $ symbol "[" <> symbol "{"
 
       return $ SimpleVar name pos
 
+
+parseVar :: Parser Exp
+parseVar = VarExp <$> variableParser
 
 -- | nil
 parseNilExp :: Parser Exp
@@ -399,7 +406,7 @@ arithmeticOperators =
 
 arithmeticTerm :: Parser Exp
 arithmeticTerm = parens parseOpExp
-                 <|> VarExp <$> parseVar
+                 <|> VarExp <$> variableParser
                  <|> IntExp <$> integerLiteral
 
 
@@ -461,9 +468,74 @@ parseAssignExp :: Parser Exp
 parseAssignExp = do
   pos <- getSourcePos
 
-  var <- parseVar
+  var <- variableParser
   symbol ":="
   exp <- parseExp
 
   return $ AssignExp { var, exp, pos }
   
+-- | if blah then blah else blah
+parseIfExp :: Parser Exp
+parseIfExp = do
+  pos <- getSourcePos
+  rword "if"
+  test <- parseExp
+  rword "then"
+  then' <- parseExp
+  else' <- optional $ rword "else" >> parseExp
+
+  return $ IfExp { test, then', else', pos }
+                         
+  
+-- | while blah do blah
+parseWhileExp :: Parser Exp
+parseWhileExp = do
+  pos <- getSourcePos
+  rword "while"
+  test <- parseExp
+  rword "do"
+  body <- parseExp
+
+  return $ WhileExp { test, body, pos }
+
+
+parseForExp :: Parser Exp
+parseForExp = do
+  pos <- getSourcePos
+  rword "for"
+  vari <- identifier
+  symbol ":="
+  lo <- parseExp
+  rword "to"
+  hi <- parseExp
+  rword "do"
+  body <- parseExp
+
+  return $ ForExp { vari, escape = True, lo, hi, body, pos }
+
+
+parseBreakExp :: Parser Exp
+parseBreakExp =
+  rword "break" *> ( BreakExp <$> getSourcePos ) 
+
+
+-- | let stuff in blah
+parseLetExp  :: Parser Exp
+parseLetExp = do
+  pos <- getSourcePos
+  rword "let"
+  decs <- many parseDec 
+  rword "in"
+  body <- parseExp
+  rword "end"
+
+  return $ LetExp { decs, body, pos }
+  
+  
+programParser :: Parser Exp
+programParser = between spaceconsumer eof parseExp
+  
+
+parseText :: Text -> String -> Either T.Text Exp
+parseText contents filename =
+  bimap (T.pack . errorBundlePretty) id $ parse programParser filename contents

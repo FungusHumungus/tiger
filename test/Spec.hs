@@ -6,15 +6,22 @@ import Test.Tasty
 import Test.Tasty.HUnit
 import Text.Megaparsec
 import Text.Megaparsec.Pos
+import Text.Megaparsec.Debug
 import Tiger.Parser
 
 
--- testParser :: Text -> 
 testParser parser msg text res =
   case parse (parser <* eof) "test" text of
     Left err -> assertFailure $ "Failed to parse " <> msg <> " -- " <> ( errorBundlePretty err )
     Right parsed -> assertEqual msg res parsed
 
+
+testDbgParser parser msg text res =
+  case parse (dbg "test" $ parser <* eof) "test" text of
+    Left err -> assertFailure $ "Failed to parse " <> msg <> " -- " <> ( errorBundlePretty err )
+    Right parsed -> assertEqual msg res parsed
+
+  
 sourcePos :: Int -> Int -> SourcePos
 sourcePos col line = SourcePos { sourceName = "test"
                          , sourceColumn = mkPos col
@@ -33,22 +40,23 @@ main = defaultMain $ testGroup "parsing"
 
 
   , testCase "Parse variables" $ do
-      testParser parseVar "simple variable" "a" $ SimpleVar (Identifier "a") (sourcePos 1 1)
+      testParser parseExp "simple variable" "a" $
+        VarExp $ SimpleVar (Identifier "a") (sourcePos 1 1)
 
-      testParser parseVar "field variable" "onk.oog" $
-        FieldVar (SimpleVar (Identifier "onk") (sourcePos 1 1)) (Identifier "oog") (sourcePos 4 1)
+      testParser parseExp "field variable" "onk.oog" $
+        VarExp $ FieldVar (SimpleVar (Identifier "onk") (sourcePos 1 1)) (Identifier "oog") (sourcePos 4 1)
 
-      testParser parseVar "subscript variable" "a[42]" $
-        SubscriptVar (SimpleVar (Identifier "a") (sourcePos 1 1)) (IntExp 42) (sourcePos 2 1)
+      testParser parseExp "subscript variable" "a[42]" $
+        VarExp $ SubscriptVar (SimpleVar (Identifier "a") (sourcePos 1 1)) (IntExp 42) (sourcePos 2 1)
 
-      testParser parseVar "multi variable" "a.x[42]" $
-        (SubscriptVar
-          (FieldVar
-            (SimpleVar (Identifier "a") (sourcePos 1 1))
-            (Identifier "x")
-            (sourcePos 2 1))
-          (IntExp 42)
-          (sourcePos 4 1))
+      testParser parseExp "multi variable" "a.x[42]" $
+        VarExp (SubscriptVar
+                (FieldVar
+                 (SimpleVar (Identifier "a") (sourcePos 1 1))
+                 (Identifier "x")
+                 (sourcePos 2 1))
+                (IntExp 42)
+                (sourcePos 4 1))
 
   , testCase "Parse array creation" $ do
       testParser parseExp "array creation" "oogle [ 42 ] of 0" $
@@ -94,4 +102,27 @@ main = defaultMain $ testGroup "parsing"
                   }
 
 
+  , testCase "Parse arithmetic" $ do
+      testParser parseExp "arithmetic" "x + y - 3" $
+        OpExp { left = OpExp { left = VarExp ( SimpleVar ( Identifier "x" ) ( sourcePos 1 1))
+                             , oper = PlusOp
+                             , right = VarExp ( SimpleVar ( Identifier "y" ) ( sourcePos 5 1 ))
+                             , pos = sourcePos 3 1
+                             }
+              , oper = MinusOp
+              , right = IntExp 3
+              , pos = sourcePos 7 1
+              }
+
+  , testCase "Parse if then else " $ do
+      testParser parseExp "if" "if a > b then 4 else 2" $
+        IfExp { test = OpExp { left = VarExp ( SimpleVar ( Identifier "a" ) ( sourcePos 4 1 ) )
+                             , oper = GtOp
+                             , right = VarExp ( SimpleVar ( Identifier "b" ) ( sourcePos 8 1 ) )
+                             , pos = sourcePos 6 1
+                             }
+              , then' = IntExp 4
+              , else' = Just $ IntExp 2
+              , pos = sourcePos 1 1
+              }
   ]

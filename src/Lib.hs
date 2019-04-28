@@ -8,7 +8,7 @@ import qualified Data.Map as Map
 import Control.Monad (void)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import qualified Lexer as L
+import qualified Tiger.Parser as P
 import System.Environment (getArgs)
 
 type Id = String
@@ -107,7 +107,7 @@ run = do
 
   putStrLn $ T.unpack contents
 
-  case L.parseText contents file of
+  case P.parseText contents file of
     Left err -> putStrLn $ T.unpack err
     Right expr -> putStrLn $ show expr
   
