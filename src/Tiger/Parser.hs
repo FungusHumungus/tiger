@@ -8,12 +8,14 @@ module Tiger.Parser where
 import Text.Megaparsec
 import Text.Megaparsec.Char
 import Text.Megaparsec.Error (errorBundlePretty)
+import Text.Megaparsec.Debug (dbg)
 import qualified Text.Megaparsec.Char.Lexer as L
 import Control.Monad.Combinators.Expr
 import Data.Text (Text)
 import Data.Bifunctor (bimap)
 import qualified Data.Text as T
 import Data.Void (Void)
+import Debug.Trace
 
 type Parser = Parsec Void Text
 
@@ -160,10 +162,10 @@ charLiteral :: Parser Char
 charLiteral = between (char '\'') (char '\'') L.charLiteral
 
 stringLiteral :: Parser Text
-stringLiteral = T.pack <$> ( char '\"' *> manyTill L.charLiteral (char '\"') )
+stringLiteral = T.pack <$> ( lexeme $ char '\"' *> manyTill L.charLiteral (char '\"') )
 
 integerLiteral :: Parser Int
-integerLiteral = lexeme L.decimal
+integerLiteral = lexeme L.decimal <?> "integer"
 
 parens :: Parser a -> Parser a
 parens = between (symbol "(") (symbol ")")
@@ -207,25 +209,31 @@ identifier =
 
 -- | Parse the expression, whatever kind of expression it is.
 parseExp :: Parser Exp
-parseExp =  ( try parseNilExp ) <|>
-            ( try parseIntExp ) <|>
-            ( try parseStringExp ) <|>
-            ( try parseRecordExp ) <|>
-            ( try parseArrayExp ) <|>
-            ( try parseCallExp ) <|>
-            ( try parseSeqExp ) <|>
-            ( try parseAssignExp ) <|>
-            ( try parseOpExp ) <|>
-            ( try parseIfExp ) <|>
-            ( try parseWhileExp ) <|>
-            ( try parseForExp ) <|>
-            ( try parseBreakExp ) <|>
-            ( try parseLetExp ) <|>
-            ( try parseVar )
-
+parseExp =  ( parseNilExp <?> "nil" ) <|>
+            ( parseForExp <?> "for" ) <|>
+            ( parseIfExp <?> "if" ) <|>
+            ( parseWhileExp <?> "while" ) <|>
+            ( parseBreakExp <?> "break" ) <|>
+            ( parseSeqExp <?> "seq" ) <|>
+            ( parseLetExp <?> "let" ) <|>
+            ( try parseIntExp <?> "int" ) <|>
+            ( try parseVar <?> "var" ) <|>
+            ( try parseStringExp <?> "string" ) <|>
+            ( try parseRecordExp <?> "record" ) <|>
+            ( try parseArrayExp <?> "array" ) <|>
+            ( try parseCallExp <?> "call" ) <|>
+            ( try parseAssignExp <?> "assign" ) <|>
+            ( try parseOpExp <?> "op" )  
 
 tyFieldParser :: Parser Field
-tyFieldParser = undefined
+tyFieldParser = do
+  pos <- getSourcePos
+  name <- identifier <?> "name"
+  symbol ":"
+  typ <- identifier <?> "type"
+
+  return $ Field { name, escape = False, typ, pos }
+
 
 
 -- | A declaration.
@@ -247,7 +255,7 @@ parseDec = ( FunctionDec <$> some parseFunctionDec ) <|>
     parseFunctionDec = do
       pos <- getSourcePos
       rword "function"
-      name <- lexeme identifier
+      name <- lexeme identifier <?> "function name"
       params <- parens $ sepBy tyFieldParser ( symbol "," )
       result <- optional parseType
       symbol "="
@@ -259,24 +267,16 @@ parseDec = ( FunctionDec <$> some parseFunctionDec ) <|>
     parseVarDec = do
       pos <- getSourcePos
       rword "var"
-      name <- identifier
-      typ <- optional $ try parseType
+      name <- identifier <?> "variable name"
+      typ <- optional $ try ( parseType <?> "type" )
       symbol ":="
       init <- parseExp
 
       return $ VarDec { name, escape = True, typ, init, pos }
 
-    parseField :: Parser Field
-    parseField = do
-      pos <- getSourcePos
-      name <- identifier
-      typ <- identifier
-
-      return $ Field { name, escape = False, typ, pos }
-
     parseRecordTy :: Parser Ty
     parseRecordTy = brackets $ do
-      fields <- sepBy parseField ( symbol "," )
+      fields <- sepBy tyFieldParser ( symbol "," )
       return $ RecordTy fields
 
     parseArrayTy :: Parser Ty
@@ -284,11 +284,10 @@ parseDec = ( FunctionDec <$> some parseFunctionDec ) <|>
       rword "array"
       rword "of"
       pos <- getSourcePos
-      ty <- identifier
+      ty <- identifier <?> "array type"
 
       return $ ArrayTy ty pos
       
-
     parseNameTy :: Parser Ty
     parseNameTy = do
       pos <- getSourcePos
@@ -311,15 +310,18 @@ parseDec = ( FunctionDec <$> some parseFunctionDec ) <|>
 variableParser :: Parser Var
 variableParser = do
   pos <- getSourcePos
-  var <- parseSimpleVar pos
-  go var
+  var <- parseSimpleVar pos <?> "Simple var"
+  return var
+  -- go var
 
   where
     
     go :: Var -> Parser Var
     go var = do
       pos <- getSourcePos
-      next <- optional $ parseFieldVar var pos <|> parseSubscriptVar var pos
+      next <- optional $
+              try ( parseFieldVar var pos <?> "field var" ) <|>
+              try ( parseSubscriptVar var pos <?> "subscript var" )
       case next of
         Nothing -> return var -- There is nothing more to this var
         Just var' -> go var'  -- There is more, continue parsing
@@ -370,7 +372,7 @@ parseStringExp = do
 parseCallExp :: Parser Exp
 parseCallExp = do
   pos <- getSourcePos
-  func <- identifier
+  func <- identifier <?> "function name"
   args <- parens $ sepBy parseExp (char ',')
 
   return $ CallExp { func, args, pos }
@@ -380,11 +382,13 @@ parseOp :: Oper -> SourcePos -> Exp -> Exp -> Exp
 parseOp oper pos left right = 
   OpExp { left, oper, right, pos }
 
+
 binary :: Text -> (SourcePos -> a -> a -> a) -> Operator Parser a
 binary name f = InfixL $ do
   pos <- getSourcePos
   f pos <$ symbol name
   
+
 -- | Set up the precedence table for parsing operators.
 arithmeticOperators :: [[Operator Parser Exp]]
 arithmeticOperators =
@@ -406,13 +410,12 @@ arithmeticOperators =
 
 arithmeticTerm :: Parser Exp
 arithmeticTerm = parens parseOpExp
-                 <|> VarExp <$> variableParser
-                 <|> IntExp <$> integerLiteral
+                 <|> VarExp <$> ( variableParser <?> "variable" )
+                 <|> IntExp <$> ( integerLiteral <?> "integer" )
 
 
 parseOpExp :: Parser Exp
 parseOpExp = makeExprParser arithmeticTerm arithmeticOperators
-
 
 
 -- | Create a record
@@ -420,7 +423,7 @@ parseOpExp = makeExprParser arithmeticTerm arithmeticOperators
 parseRecordExp :: Parser Exp
 parseRecordExp = brackets $ do
   pos <- getSourcePos
-  typ <- identifier
+  typ <- identifier <?> "record name"
   fields <- sepBy parseAssignment (symbol ",")
 
   return $ RecordExp { fields, typ, pos }
@@ -428,9 +431,9 @@ parseRecordExp = brackets $ do
   where
     parseAssignment = do
       pos <- getSourcePos
-      id <- identifier
+      id <- identifier <?> "record field"
       symbol "="
-      exp <- parseExp
+      exp <- parseExp <?> "record field value"
 
       return ( id, exp, pos )
 
@@ -439,10 +442,10 @@ parseRecordExp = brackets $ do
 parseArrayExp :: Parser Exp
 parseArrayExp = do
   pos <- getSourcePos
-  typ <- identifier
+  typ <- identifier <?> "array name"
   size <- squareBrackets parseExp
   rword "of"
-  init <- parseExp
+  init <- parseExp <?> "array init"
 
   return $ ArrayExp { typ, size, init, pos }
 
@@ -451,6 +454,7 @@ parseArrayExp = do
 -- ( x := 4; print "ook" )
 parseSeqExp :: Parser Exp
 parseSeqExp = parens $ do
+  traceM "Seq"
   pos <- getSourcePos
   exps <- sepBy expParser' $ symbol ";"
 
@@ -468,21 +472,22 @@ parseAssignExp :: Parser Exp
 parseAssignExp = do
   pos <- getSourcePos
 
-  var <- variableParser
+  var <- variableParser <?> "variable"
   symbol ":="
   exp <- parseExp
 
   return $ AssignExp { var, exp, pos }
   
+
 -- | if blah then blah else blah
 parseIfExp :: Parser Exp
 parseIfExp = do
   pos <- getSourcePos
   rword "if"
-  test <- parseExp
+  test <- parseExp <?> "test"
   rword "then"
-  then' <- parseExp
-  else' <- optional $ rword "else" >> parseExp
+  then' <- parseExp <?> "then"
+  else' <- optional $ rword "else" >> ( parseExp <?> "else" )
 
   return $ IfExp { test, then', else', pos }
                          
@@ -503,11 +508,11 @@ parseForExp :: Parser Exp
 parseForExp = do
   pos <- getSourcePos
   rword "for"
-  vari <- identifier
+  vari <- identifier <?> "for variable"
   symbol ":="
-  lo <- parseExp
+  lo <- parseExp <?> "lo"
   rword "to"
-  hi <- parseExp
+  hi <- parseExp <?> "hi"
   rword "do"
   body <- parseExp
 
@@ -539,3 +544,8 @@ programParser = between spaceconsumer eof parseExp
 parseText :: Text -> String -> Either T.Text Exp
 parseText contents filename =
   bimap (T.pack . errorBundlePretty) id $ parse programParser filename contents
+
+
+ook = parseTest ((parseExp <?> "var") <* eof ) "oogle [ 42 ] of 0"
+
+onk = parseTest ((parseVar <?> "var") <* eof ) "oogle [ 42 ] of 0"

@@ -82,6 +82,9 @@ main = defaultMain $ testGroup "parsing"
                            }, sourcePos 6 1 )
                ]
 
+      testParser parseExp "sequences" "(4)" $
+        SeqExp [ ( IntExp 4, sourcePos 2 1 ) ]
+
   , testCase "Parse assignment" $ do
       testParser parseExp "assignment" "x := 32" $
         AssignExp { var = SimpleVar (Identifier "x") (sourcePos 1 1)
@@ -125,4 +128,18 @@ main = defaultMain $ testGroup "parsing"
               , else' = Just $ IntExp 2
               , pos = sourcePos 1 1
               }
+
+  , testCase "Parse for" $ do
+      testParser parseExp "for" "for i := 0 to N do print (i) " $
+        ForExp { vari = Identifier "i"
+               , escape = True
+               , lo = IntExp 0
+               , hi = VarExp $ SimpleVar (Identifier "N") (sourcePos 15 1)
+               , body = CallExp { func = Identifier "print"
+                                , args = [ VarExp $ SimpleVar (Identifier "i") (sourcePos 27 1) ]
+                                , pos = sourcePos 20 1
+                                }
+               , pos = sourcePos 1 1
+               }
+    
   ]
